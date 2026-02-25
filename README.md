@@ -12,29 +12,42 @@ Every Monday, run one command and it will:
 
 ---
 
-## Requirements
+## Installation
 
-### 1. Install Python dependencies
+### Automatic (recommended)
+
+Run the setup script once and it will install everything for you — Homebrew (macOS), Python 3, ffmpeg, and all Python packages:
+
 ```bash
-pip install yt-dlp google-auth google-auth-oauthlib google-api-python-client requests tqdm
+./setup.sh
 ```
 
-### 2. Install ffmpeg
+The script will:
+1. Detect your OS (macOS or Linux)
+2. Install **Homebrew** if not present (macOS only)
+3. Install **Python 3.9+** if missing or outdated
+4. Install **pip** and upgrade it to the latest version
+5. Install **ffmpeg**
+6. Install all **Python packages** from `requirements.txt`
+7. Run a verification check and print a summary
 
-**macOS:**
+At the end you'll see a ✓ or ⚠ next to each dependency so you know everything is ready.
+
+> **Windows:** The setup script is not supported on Windows. Install [Python](https://python.org), [ffmpeg](https://ffmpeg.org/download.html), and run `pip install -r requirements.txt` manually.
+
+### Manual installation
+
+If you prefer to install things yourself:
+
 ```bash
-brew install ffmpeg
+# macOS
+brew install python@3.12 ffmpeg
+pip install -r requirements.txt
+
+# Ubuntu/Debian
+sudo apt install python3 python3-pip ffmpeg
+pip install -r requirements.txt
 ```
-
-**Windows:**  
-Download from https://ffmpeg.org/download.html and add to your PATH.
-
-**Linux (Ubuntu/Debian):**
-```bash
-sudo apt install ffmpeg
-```
-
-Verify it works: `ffmpeg -version`
 
 ---
 
