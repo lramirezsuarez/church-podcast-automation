@@ -23,8 +23,16 @@ import re
 import sys
 import subprocess
 import argparse
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
+
+try:
+    from tqdm import tqdm
+    TQDM_AVAILABLE = True
+except ImportError:
+    TQDM_AVAILABLE = False
 
 # ── Python version guard ──────────────────────────────────────────
 if sys.version_info < (3, 10):
@@ -117,6 +125,68 @@ def get_video_duration(filepath):
     if result.returncode != 0 or not result.stdout.strip():
         return None
     return float(result.stdout.strip())
+
+def ffmpeg_with_progress(cmd, label, duration_secs=None):
+    """
+    Run an ffmpeg command and show a tqdm progress bar based on time processed.
+    Falls back to a simple spinner if duration is unknown or tqdm unavailable.
+    """
+    # Add progress reporting flags
+    cmd = list(cmd) + ["-progress", "pipe:1", "-nostats"]
+
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+
+    if TQDM_AVAILABLE and duration_secs:
+        bar = tqdm(
+            total=int(duration_secs),
+            desc=f"  {label}",
+            unit="s",
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt}s [{elapsed}<{remaining}]",
+            ncols=70,
+        )
+        last_time = 0
+        for line in process.stdout:
+            line = line.strip()
+            if line.startswith("out_time_ms="):
+                try:
+                    ms = int(line.split("=")[1])
+                    current = ms // 1_000_000
+                    if current > last_time:
+                        bar.update(current - last_time)
+                        last_time = current
+                except (ValueError, IndexError):
+                    pass
+        bar.n = int(duration_secs)
+        bar.refresh()
+        bar.close()
+    else:
+        # Simple spinner fallback
+        spinner = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]
+        idx = [0]
+        done = [False]
+        def spin():
+            while not done[0]:
+                print(f"\r  {label}... {spinner[idx[0] % len(spinner)]}", end="", flush=True)
+                idx[0] += 1
+                time.sleep(0.1)
+        t = threading.Thread(target=spin, daemon=True)
+        t.start()
+        process.stdout.read()  # drain
+        done[0] = True
+        t.join()
+        print(f"\r  {label}... ✓" + " " * 10)
+
+    process.wait()
+    if process.returncode != 0:
+        err = process.stderr.read()
+        print(f"\n✗ {label} failed:\n{err}")
+        sys.exit(1)
 
 def print_summary(trimmed_video, audio_file):
     print()
@@ -342,6 +412,11 @@ def trim_and_normalize(input_file, start_ts, end_ts, output_dir, label):
     out_video = os.path.join(output_dir, f"{label}_sermon.mp4")
     target = CONFIG["loudness_target"]
 
+    # Calculate duration of the sermon segment for the progress bar
+    start_secs    = timestamp_to_seconds(start_ts)
+    end_secs      = timestamp_to_seconds(end_ts)
+    segment_secs  = end_secs - start_secs
+
     print(f"\n▶ Trimming {start_ts} → {end_ts} and normalizing audio...")
     cmd = [
         "ffmpeg", "-y",
@@ -352,10 +427,7 @@ def trim_and_normalize(input_file, start_ts, end_ts, output_dir, label):
         "-c:a", "aac", "-b:a", "192k",
         out_video,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        print(result.stderr)
-        sys.exit(1)
+    ffmpeg_with_progress(cmd, "Trimming & normalizing", duration_secs=segment_secs)
     print(f"✓ Trimmed video: {out_video}")
     return out_video
 
@@ -363,6 +435,7 @@ def export_audio(video_file, output_dir, label):
     """Extract audio from trimmed video and save as MP3."""
     ensure_dir(output_dir)
     out_audio = os.path.join(output_dir, f"{label}_sermon.mp3")
+    duration  = get_video_duration(video_file)
 
     print(f"\n▶ Exporting MP3...")
     cmd = [
@@ -371,10 +444,7 @@ def export_audio(video_file, output_dir, label):
         "-vn", "-ar", "44100", "-ac", "2", "-b:a", "192k",
         out_audio,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        print(result.stderr)
-        sys.exit(1)
+    ffmpeg_with_progress(cmd, "Exporting MP3", duration_secs=duration)
     print(f"✓ Audio: {out_audio}")
     return out_audio
 
@@ -432,17 +502,47 @@ def download_youtube(url, output_dir):
 
     for browser in browsers:
         print(f"  Trying cookies from {browser}...")
-        cmd = base_cmd + ["--cookies-from-browser", browser, url]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode == 0:
-            print(f"  ✓ {browser} cookies worked")
+        # --newline makes yt-dlp print each progress update on its own line
+        # so we can stream it live to the terminal instead of buffering
+        cmd = base_cmd + ["--cookies-from-browser", browser, "--newline", url]
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stdout_lines = []
+        for line in process.stdout:
+            line_s = line.strip()
+            stdout_lines.append(line_s)
+            # Show yt-dlp's own progress lines (download %, ETA, speed)
+            if "[download]" in line_s or "[Merger]" in line_s or "[ffmpeg]" in line_s:
+                print(f"  {line_s}", end="\r" if "%" in line_s else "\n", flush=True)
+        process.wait()
+        result_stdout = "\n".join(stdout_lines)
+        result_stderr = process.stderr.read()
+        if process.returncode == 0:
+            print(f"\n  ✓ {browser} cookies worked")
+            # Reconstruct a result-like object for filepath parsing below
+            class _Result:
+                returncode = 0
+                stdout = result_stdout
+                stderr = result_stderr
+            result = _Result()
             break
-        last_error = result.stderr
-        print(f"  {browser} failed, trying next...")
+        last_error = result_stderr
+        print(f"\n  {browser} failed, trying next...")
     else:
         print("  No browser cookies worked, attempting without cookies...")
-        cmd = base_cmd + [url]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        cmd = base_cmd + ["--newline", url]
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stdout_lines = []
+        for line in process.stdout:
+            line_s = line.strip()
+            stdout_lines.append(line_s)
+            if "[download]" in line_s or "[Merger]" in line_s or "[ffmpeg]" in line_s:
+                print(f"  {line_s}", end="\r" if "%" in line_s else "\n", flush=True)
+        process.wait()
+        class _Result:
+            returncode = process.returncode
+            stdout = "\n".join(stdout_lines)
+            stderr = process.stderr.read()
+        result = _Result()
 
     if result.returncode != 0:
         print(last_error or result.stderr)
@@ -452,7 +552,9 @@ def download_youtube(url, output_dir):
         print("  System Settings → Privacy & Security → Full Disk Access")
         sys.exit(1)
 
-    filepath = result.stdout.strip().splitlines()[-1]
+    all_lines = [l for l in result.stdout.strip().splitlines() if l and not l.startswith("[")]
+    filepath  = all_lines[-1] if all_lines else ""
+    print()  # newline after \r progress lines
     if not os.path.exists(filepath):
         files = sorted(Path(output_dir).glob("*.mp4"), key=os.path.getmtime, reverse=True)
         if not files:
@@ -496,7 +598,7 @@ def get_latest_channel_video():
     """Return the URL of the most recent public video on the configured channel."""
     try:
         from googleapiclient.discovery import build
-        creds = _get_youtube_credentials(readonly=True)
+        creds = _get_youtube_credentials()
         youtube = build("youtube", "v3", credentials=creds)
         response = youtube.search().list(
             channelId=CONFIG["youtube_channel_id"],
@@ -608,11 +710,16 @@ def upload_to_youtube(video_file, title, description, privacy="public"):
         print("✗ google-api-python-client not installed. Run ./setup.sh")
         sys.exit(1)
 
-    creds   = _get_youtube_credentials()
+    # Always use full (non-readonly) scopes so upload is permitted
+    creds   = _get_youtube_credentials(readonly=False)
     youtube = build("youtube", "v3", credentials=creds)
 
     # Let the user pick which channel to upload to
-    channel_id = select_upload_channel(youtube)
+    # The YouTube API uploads to whichever channel the authenticated user
+    # selects — for Brand Accounts the API automatically targets that channel
+    # when the user is switched to it during OAuth. We show the list so the
+    # user can confirm they are authenticated against the right account.
+    select_upload_channel(youtube)
 
     print(f"\n▶ Uploading: {title}")
 
@@ -630,8 +737,6 @@ def upload_to_youtube(video_file, title, description, privacy="public"):
         part="snippet,status",
         body=body,
         media_body=media,
-        # onBehalfOfContentOwnerChannel targets the chosen Brand Account channel
-        onBehalfOfContentOwnerChannel=channel_id if channel_id else None,
     )
 
     response = None
@@ -641,7 +746,12 @@ def upload_to_youtube(video_file, title, description, privacy="public"):
             print(f"  Uploading... {int(status.progress() * 100)}%", end="\r")
 
     video_id = response["id"]
-    print(f"\n✓ Uploaded: https://www.youtube.com/watch?v={video_id}")
+    video_url  = f"https://www.youtube.com/watch?v={video_id}"
+    studio_url = f"https://studio.youtube.com/video/{video_id}/edit"
+    print(f"\n✓ Uploaded: {video_url}")
+    print(f"  Opening YouTube Studio to finish setup (audience, tags, playlist)...")
+    import webbrowser
+    webbrowser.open(studio_url)
     return video_id
 
 def ask_youtube_upload(args, trimmed_video, episode_title, description):

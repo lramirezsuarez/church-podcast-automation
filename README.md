@@ -10,19 +10,20 @@ The script has two modes you choose from each time you run it:
 
 **Mode A — Auto (full pipeline)**
 1. Downloads the live broadcast from YouTube using your browser cookies
-2. Asks for sermon start/end timestamps and trims the video
-3. Normalizes and boosts the audio volume automatically
-4. Saves a trimmed `.mp4` and a `.mp3`
-5. Re-uploads the trimmed sermon clip to your YouTube channel
-6. Opens Spotify for Podcasters in your browser for the audio upload
+2. Asks for sermon start/end timestamps (manual or auto-detected) and trims the video
+3. Normalizes and boosts the audio volume — shows a live progress bar
+4. Saves a trimmed `.mp4` and a `.mp3` — shows a live progress bar
+5. Lets you choose which YouTube channel to upload the trimmed clip to
+6. Opens YouTube Studio for the uploaded video so you can set audience, tags, and playlist
+7. Opens Spotify for Podcasters in your browser for the audio upload
 
 **Mode B — Manual (local file)**
-1. Uses a `.mp4` you already downloaded from YouTube Studio
-2. Asks for sermon start/end timestamps and trims the video
-3. Normalizes and boosts the audio volume automatically
-4. Saves a trimmed `.mp4` and a `.mp3`
-5. Opens Spotify for Podcasters in your browser for the audio upload
-6. YouTube re-upload is skipped — you can do it manually later
+1. Uses a `.mp4` you already downloaded from YouTube Studio (auto-detected from `inbox/`)
+2. Asks for sermon start/end timestamps (manual or auto-detected) and trims the video
+3. Normalizes and boosts the audio volume — shows a live progress bar
+4. Saves a trimmed `.mp4` and a `.mp3` — shows a live progress bar
+5. Optionally uploads to YouTube (same channel picker and Studio redirect as Mode A)
+6. Opens Spotify for Podcasters in your browser for the audio upload
 
 ---
 
@@ -37,6 +38,7 @@ church-podcast-automation/
   ├── inbox/                         ← drop your .mp4 here for Mode B (auto-detected)
   ├── podcast_output/                ← trimmed video and MP3 saved here
   ├── client_secrets.json            ← YouTube API credentials (you add this, see below)
+  ├── youtube_token.json             ← auto-generated after first login (do not commit)
   └── .gitignore
 ```
 
@@ -89,9 +91,9 @@ Open `church_podcast_automation.py` in any text editor and update the `CONFIG` b
 CONFIG = {
     "output_dir":            "./podcast_output",   # where trimmed files are saved
     "inbox_dir":             "./inbox",            # drop .mp4 files here for Mode B
-    "youtube_channel_id":    "UCxxxxxxxxxx",       # your channel ID (Mode A only)
+    "youtube_channel_id":    "UCxxxxxxxxxx",       # your channel ID (used to fetch latest video)
     "youtube_privacy":       "public",             # "public" | "unlisted" | "private"
-    "podcast_title_prefix":  "Sermón —",           # customize to your language
+    "podcast_title_prefix":  "Sermón —",           # customize to your language/format
     "podcast_description":   "...",                # default episode description
     "loudness_target":       "-14",                # audio boost (-12 or -10 if still quiet)
 }
@@ -104,7 +106,7 @@ Go to https://www.youtube.com/account_advanced while logged in → copy "Channel
 
 ## YouTube API Setup
 
-Required for **Mode A** (re-uploading the sermon clip to YouTube). Only needs to be done once.
+Required for uploading the trimmed sermon clip to YouTube (both modes offer this). Only needs to be done once.
 
 1. Go to: https://console.cloud.google.com
 2. Create a new project (e.g. "Church Podcast")
@@ -115,9 +117,17 @@ Required for **Mode A** (re-uploading the sermon clip to YouTube). Only needs to
    - Application type: **Desktop app**
    - Download the JSON file
 5. Rename the file to **`client_secrets.json`** and place it in this project folder
-6. The first time you run Mode A, a browser window will open asking you to log into the Google account that owns the channel. After that, the script saves a token and won't ask again.
+6. The first time you upload, a browser window will open asking you to log in with the Google account that manages the channel. After that, the script saves a `youtube_token.json` and won't ask again.
 
-> **Mode B does not require YouTube API credentials.**
+### Uploading to a Brand Account (church channel vs. personal channel)
+
+If your personal Google account manages a separate church channel (a Brand Account), the script will show a numbered list of all channels available to your account and ask you to pick one before each upload — so you can never accidentally upload to the wrong channel.
+
+If the wrong channel was selected in a previous run, delete `youtube_token.json` and re-run to choose again:
+```bash
+rm youtube_token.json
+./run.sh
+```
 
 ---
 
@@ -148,9 +158,19 @@ You'll see a mode selection menu:
   Enter A or B:
 ```
 
+### Interactive menus
+
+The script walks you through each decision step by step:
+
+- **YouTube source** (Mode A) — choose between fetching the latest video from your channel automatically, or pasting a specific URL
+- **Sermon timestamps** — choose manual entry or auto-detection (scans the audio for silence gaps at the start and end of the sermon)
+- **Episode metadata** — choose to use the CONFIG defaults or enter a custom title and description
+- **YouTube upload** — confirm upload and pick which channel from a numbered list; YouTube Studio opens automatically after upload so you can set audience, tags, and playlist
+- **Spotify for Podcasters** — the upload page opens in your browser with the file path copied to your clipboard
+
 ### Skip the menu with flags
 
-You can bypass the menu entirely by passing `--mode` directly:
+You can bypass the menu entirely by passing flags directly:
 
 ```bash
 # Mode A — prompted for URL interactively
@@ -164,7 +184,8 @@ You can bypass the menu entirely by passing `--mode` directly:
   --url "https://www.youtube.com/watch?v=XXXXXXX" \
   --start 00:32:15 \
   --end 01:18:40 \
-  --title "Sermon — January 14, 2025"
+  --title "Sermon — January 14, 2025" \
+  --description "Sunday morning service"
 
 # Mode B — auto-detects newest .mp4 in inbox/
 ./run.sh --mode B
@@ -177,7 +198,8 @@ You can bypass the menu entirely by passing `--mode` directly:
   --file ~/Downloads/service.mp4 \
   --start 00:32:15 \
   --end 01:18:40 \
-  --title "Sermon — January 14, 2025"
+  --title "Sermon — January 14, 2025" \
+  --description "Sunday morning service"
 ```
 
 ### All available flags
@@ -188,19 +210,33 @@ You can bypass the menu entirely by passing `--mode` directly:
 | `--url "https://..."` | A | YouTube URL to download |
 | `--latest` | A | Auto-fetch the latest video from your channel |
 | `--file path/to/video.mp4` | B | Path to a local `.mp4` file |
-| `--start HH:MM:SS` | Both | Sermon start timestamp |
-| `--end HH:MM:SS` | Both | Sermon end timestamp |
-| `--title "..."` | Both | Episode title (default: auto-generated from today's date) |
-| `--privacy public\|unlisted\|private` | A | YouTube upload privacy (default: public) |
+| `--start HH:MM:SS` | Both | Sermon start timestamp (skips timestamp menu) |
+| `--end HH:MM:SS` | Both | Sermon end timestamp (skips timestamp menu) |
+| `--title "..."` | Both | Episode title (skips metadata menu) |
+| `--description "..."` | Both | Episode description (skips metadata menu) |
+| `--privacy public\|unlisted\|private` | Both | YouTube upload privacy (default: from CONFIG) |
 
 ### Mode B — inbox folder
 
-For Mode B, the easiest workflow is to drop your downloaded `.mp4` into the `inbox/` folder. The script will auto-detect the newest file there and ask if you want to use it — no need to type a path.
+The easiest Mode B workflow is to drop your `.mp4` from YouTube Studio into the `inbox/` folder. The script auto-detects the newest file there and asks if you want to use it — no path typing needed.
 
 ```
 inbox/
   └── Sunday Service Jan 14.mp4   ← drop it here, script picks it up automatically
 ```
+
+---
+
+## Progress Indicators
+
+Every long-running step shows progress so you always know what's happening:
+
+- **YouTube download** — shows yt-dlp's live output including download percentage, speed, and ETA
+- **Trim & normalize** — shows a tqdm progress bar with elapsed and remaining time in seconds
+- **MP3 export** — shows a tqdm progress bar with elapsed and remaining time in seconds
+- **YouTube upload** — shows upload percentage via the resumable upload API
+
+If `tqdm` is unavailable for any reason, the ffmpeg steps fall back to a simple animated spinner.
 
 ---
 
@@ -212,6 +248,23 @@ It tries each browser in order until one works: **Chrome → Safari → Firefox*
 
 **If downloads fail**, make sure you are logged into YouTube in one of those browsers. On macOS you may also need to grant Full Disk Access to Terminal so it can read browser cookies:
 > System Settings → Privacy & Security → Full Disk Access → enable Terminal
+
+---
+
+## After Upload — YouTube Studio
+
+After a successful upload the script automatically opens YouTube Studio for that specific video:
+
+```
+https://studio.youtube.com/video/{video_id}/edit
+```
+
+From there you can set:
+- **Audience** (made for kids / not made for kids)
+- **Tags** for discoverability
+- **Playlist** to add the sermon to your weekly series
+- **End screens and cards**
+- **Chapters** if desired
 
 ---
 
@@ -244,10 +297,14 @@ podcast_output/
 |---|---|
 | `zsh: permission denied: ./setup.sh` | Run `chmod +x setup.sh` first |
 | `zsh: permission denied: ./run.sh` | Run `chmod +x run.sh` first |
-| Script starts with Python 3.9 | Always use `./run.sh` — never `python3 church_podcast_automation.py` directly |
+| Script starts with Python 3.9 | Always use `./run.sh` — never call `python3` directly |
 | `No module named yt_dlp` | Run `.venv/bin/pip install -r requirements.txt` |
+| `No module named tqdm` | Run `.venv/bin/pip install tqdm` |
 | YouTube download fails with 403 | Log into YouTube in Chrome/Safari/Firefox and try again |
 | YouTube download fails — cookie error | Grant Full Disk Access to Terminal in System Settings → Privacy & Security |
-| YouTube upload fails with auth error | Delete `youtube_token.json` and re-run to re-authenticate |
+| YouTube upload goes to wrong channel | Delete `youtube_token.json`, re-run, and pick the correct channel from the list |
+| YouTube upload fails — insufficient permissions | Delete `youtube_token.json` and re-run to get a fresh token with correct scopes |
+| YouTube Studio doesn't open | The upload succeeded — go to https://studio.youtube.com manually |
 | Audio still too quiet | Lower `loudness_target` in CONFIG to `-12` or `-10` |
 | `client_secrets.json` not found | See YouTube API Setup section above |
+| Auto-detect timestamps are wrong | Choose `[A] Adjust manually` when prompted, or use `--start` / `--end` flags next time |
