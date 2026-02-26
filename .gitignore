@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+venv/
+.venv/
+
+# Auth & credentials — NEVER commit these
+client_secrets.json
+youtube_token.json
+# Output files
+podcast_output/
+# OS
+.DS_Store
+Thumbs.db
+run.sh

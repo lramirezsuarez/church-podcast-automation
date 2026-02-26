@@ -6,6 +6,8 @@
 
 set -e  # Exit on any error
 
+VENV_DIR="$(dirname "$0")/.venv"
+
 # ── Colors ────────────────────────────────────────────────────────
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -46,76 +48,75 @@ install_homebrew() {
         info "Installing Homebrew..."
         /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
-        # Add Homebrew to PATH for Apple Silicon Macs
         if [[ -f /opt/homebrew/bin/brew ]]; then
             eval "$(/opt/homebrew/bin/brew shellenv)"
             SHELL_PROFILE=""
-            if [[ "$SHELL" == */zsh ]]; then
-                SHELL_PROFILE="$HOME/.zprofile"
-            elif [[ "$SHELL" == */bash ]]; then
-                SHELL_PROFILE="$HOME/.bash_profile"
+            if [[ "$SHELL" == */zsh ]]; then SHELL_PROFILE="$HOME/.zprofile"
+            elif [[ "$SHELL" == */bash ]]; then SHELL_PROFILE="$HOME/.bash_profile"
             fi
             if [[ -n "$SHELL_PROFILE" ]]; then
                 echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> "$SHELL_PROFILE"
                 info "Added Homebrew to $SHELL_PROFILE"
             fi
         fi
-
         success "Homebrew installed"
     fi
 }
 
 # ─────────────────────────────────────────────────────────────────
-#  2. PYTHON
+#  2. PYTHON 3.12
 # ─────────────────────────────────────────────────────────────────
 install_python() {
-    header "Python 3"
-
-    if command -v python3 &>/dev/null; then
-        PY_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-        PY_MAJOR=$(echo "$PY_VERSION" | cut -d. -f1)
-        PY_MINOR=$(echo "$PY_VERSION" | cut -d. -f2)
-
-        if [[ "$PY_MAJOR" -ge 3 && "$PY_MINOR" -ge 9 ]]; then
-            success "Python $PY_VERSION already installed"
-            PYTHON_CMD="python3"
-            return
-        else
-            warning "Python $PY_VERSION found but 3.9+ is required. Upgrading..."
-        fi
-    else
-        info "Python 3 not found. Installing..."
-    fi
+    header "Python 3.12"
 
     if [[ "$OS" == "macos" ]]; then
         brew install python@3.12
-        brew link --overwrite python@3.12 2>/dev/null || true
+
+        # Resolve the exact binary path from Homebrew — works on both
+        # Apple Silicon (/opt/homebrew) and Intel (/usr/local)
+        BREW_PREFIX=$(brew --prefix)
+        PYTHON_CMD="$BREW_PREFIX/opt/python@3.12/bin/python3.12"
+
+        if [[ ! -f "$PYTHON_CMD" ]]; then
+            error "python3.12 not found at $PYTHON_CMD. Try: brew reinstall python@3.12"
+        fi
+
     elif [[ "$OS" == "debian" ]]; then
         sudo apt-get update -q
-        sudo apt-get install -y python3 python3-pip python3-venv
+        sudo apt-get install -y python3.12 python3.12-venv python3-pip
+        PYTHON_CMD="python3.12"
+
     elif [[ "$OS" == "redhat" ]]; then
-        sudo dnf install -y python3 python3-pip
+        sudo dnf install -y python3.12 python3-pip
+        PYTHON_CMD="python3.12"
     fi
 
-    PYTHON_CMD="python3"
-    success "Python $(python3 --version) installed"
+    success "Using $($PYTHON_CMD --version)"
 }
 
 # ─────────────────────────────────────────────────────────────────
-#  3. PIP
+#  3. VIRTUAL ENVIRONMENT
+#  All packages are installed into .venv so we never touch the
+#  system or Homebrew Python — avoids the "externally managed
+#  environment" error introduced in Python 3.12 / PEP 668.
 # ─────────────────────────────────────────────────────────────────
-ensure_pip() {
-    header "pip"
-    if ! $PYTHON_CMD -m pip --version &>/dev/null; then
-        info "pip not found. Installing..."
-        if [[ "$OS" == "macos" ]]; then
-            brew install python@3.12
-        else
-            sudo apt-get install -y python3-pip
-        fi
+setup_venv() {
+    header "Virtual environment (.venv)"
+
+    if [[ -d "$VENV_DIR" ]]; then
+        info ".venv already exists, updating packages..."
+    else
+        info "Creating .venv with $($PYTHON_CMD --version)..."
+        $PYTHON_CMD -m venv "$VENV_DIR"
+        success ".venv created at $VENV_DIR"
     fi
-    $PYTHON_CMD -m pip install --upgrade pip --quiet
-    success "pip $($PYTHON_CMD -m pip --version | awk '{print $2}') ready"
+
+    # Always use the venv's Python from here on
+    PYTHON_CMD="$VENV_DIR/bin/python"
+    PIP_CMD="$VENV_DIR/bin/pip"
+
+    $PIP_CMD install --upgrade pip --quiet
+    success "Virtual environment ready"
 }
 
 # ─────────────────────────────────────────────────────────────────
@@ -130,8 +131,7 @@ install_ffmpeg() {
         if [[ "$OS" == "macos" ]]; then
             brew install ffmpeg
         elif [[ "$OS" == "debian" ]]; then
-            sudo apt-get update -q
-            sudo apt-get install -y ffmpeg
+            sudo apt-get update -q && sudo apt-get install -y ffmpeg
         elif [[ "$OS" == "redhat" ]]; then
             sudo dnf install -y https://download1.rpmfusion.org/free/el/rpmfusion-free-release-$(rpm -E %rhel).noarch.rpm 2>/dev/null || true
             sudo dnf install -y ffmpeg
@@ -141,7 +141,7 @@ install_ffmpeg() {
 }
 
 # ─────────────────────────────────────────────────────────────────
-#  5. PYTHON DEPENDENCIES
+#  5. PYTHON DEPENDENCIES (into .venv)
 # ─────────────────────────────────────────────────────────────────
 install_python_deps() {
     header "Python packages"
@@ -149,11 +149,11 @@ install_python_deps() {
     REQUIREMENTS_FILE="$(dirname "$0")/requirements.txt"
 
     if [[ -f "$REQUIREMENTS_FILE" ]]; then
-        info "Installing from requirements.txt..."
-        $PYTHON_CMD -m pip install -r "$REQUIREMENTS_FILE" --quiet
+        info "Installing from requirements.txt into .venv..."
+        $PIP_CMD install -r "$REQUIREMENTS_FILE" --quiet
     else
         info "requirements.txt not found. Installing packages directly..."
-        $PYTHON_CMD -m pip install \
+        $PIP_CMD install \
             yt-dlp \
             google-auth \
             google-auth-oauthlib \
@@ -163,11 +163,29 @@ install_python_deps() {
             --quiet
     fi
 
-    success "All Python packages installed"
+    success "All Python packages installed into .venv"
 }
 
 # ─────────────────────────────────────────────────────────────────
-#  6. VERIFY EVERYTHING
+#  6. WRITE run.sh HELPER
+#  So the user never has to remember to activate the venv manually.
+# ─────────────────────────────────────────────────────────────────
+write_run_script() {
+    header "Creating run.sh"
+
+    RUN_SCRIPT="$(dirname "$0")/run.sh"
+    cat > "$RUN_SCRIPT" << EOF
+#!/bin/bash
+# Runs church_podcast_automation.py inside the .venv automatically.
+SCRIPT_DIR="\$(cd "\$(dirname "\$0")" && pwd)"
+"\$SCRIPT_DIR/.venv/bin/python" "\$SCRIPT_DIR/church_podcast_automation.py" "\$@"
+EOF
+    chmod +x "$RUN_SCRIPT"
+    success "run.sh created — use this every Monday instead of calling python3 directly"
+}
+
+# ─────────────────────────────────────────────────────────────────
+#  7. VERIFY
 # ─────────────────────────────────────────────────────────────────
 verify_installation() {
     header "Verifying installation"
@@ -184,16 +202,16 @@ verify_installation() {
         fi
     }
 
-    check "Python 3"         "command -v python3"
-    check "pip"              "$PYTHON_CMD -m pip --version"
-    check "ffmpeg"           "command -v ffmpeg"
-    check "yt-dlp"           "$PYTHON_CMD -m yt_dlp --version"
-    check "google-auth"      "$PYTHON_CMD -c 'import google.auth'"
-    check "googleapiclient"  "$PYTHON_CMD -c 'import googleapiclient'"
+    check "Python 3.10+ in .venv"   "$PYTHON_CMD -c 'import sys; exit(0 if sys.version_info >= (3,10) else 1)'"
+    check "ffmpeg"                   "command -v ffmpeg"
+    check "yt-dlp"                   "$PYTHON_CMD -m yt_dlp --version"
+    check "google-auth"              "$PYTHON_CMD -c 'import google.auth'"
+    check "googleapiclient"          "$PYTHON_CMD -c 'import googleapiclient'"
+    check "OpenSSL (not LibreSSL)"   "$PYTHON_CMD -c \"import ssl; assert 'LibreSSL' not in ssl.OPENSSL_VERSION\""
 
     if $ALL_OK; then
         echo ""
-        echo -e "${GREEN}${BOLD}🎉 Setup complete! Everything is installed and ready.${RESET}"
+        echo -e "${GREEN}${BOLD}🎉 Setup complete!${RESET}"
     else
         echo ""
         warning "Some items may not have installed correctly. Review the output above."
@@ -201,23 +219,20 @@ verify_installation() {
 }
 
 # ─────────────────────────────────────────────────────────────────
-#  NEXT STEPS REMINDER
+#  NEXT STEPS
 # ─────────────────────────────────────────────────────────────────
 print_next_steps() {
     echo ""
-    echo -e "${BOLD}Next steps:${RESET}"
-    echo "  1. Get your YouTube OAuth credentials:"
-    echo "     https://console.cloud.google.com → APIs & Services → Credentials"
-    echo "     Download as 'client_secrets.json' and place it in this folder."
+    echo -e "${BOLD}Every Monday, just run:${RESET}"
+    echo "  ./run.sh"
     echo ""
-    echo "  2. Edit the CONFIG block in church_podcast_automation.py:"
-    echo "     - Set your YouTube channel ID"
-    echo "     - Set your preferred episode title prefix and description"
+    echo -e "${BOLD}First-time setup:${RESET}"
+    echo "  1. Download OAuth credentials from https://console.cloud.google.com"
+    echo "     Save as 'client_secrets.json' in this folder."
+    echo "  2. Edit the CONFIG block in church_podcast_automation.py"
+    echo "     with your YouTube channel ID and episode defaults."
     echo ""
-    echo "  3. Run the script every Monday:"
-    echo "     python3 church_podcast_automation.py"
-    echo ""
-    echo "  See README.md for the full setup guide."
+    echo "  See README.md for the full guide."
     echo ""
 }
 
@@ -229,14 +244,11 @@ echo -e "${BOLD}Church Podcast Automation — Setup${RESET}"
 echo "────────────────────────────────────"
 
 detect_os
-
-if [[ "$OS" == "macos" ]]; then
-    install_homebrew
-fi
-
+[[ "$OS" == "macos" ]] && install_homebrew
 install_python
-ensure_pip
+setup_venv
 install_ffmpeg
 install_python_deps
+write_run_script
 verify_installation
 print_next_steps

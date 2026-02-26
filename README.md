@@ -19,6 +19,7 @@ Every Monday, run one command and it will:
 Run the setup script once and it will install everything for you — Homebrew (macOS), Python 3, ffmpeg, and all Python packages:
 
 ```bash
+chmod +x setup.sh   # only needed once after cloning
 ./setup.sh
 ```
 
