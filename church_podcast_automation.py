@@ -49,11 +49,11 @@ CONFIG = {
     "youtube_channel_id": "UCxxxxxxxxxxxxxxxxxxxxxxxxx",
 
     # YouTube upload privacy for the trimmed sermon clip
-    "youtube_privacy": "public",   # "public" | "unlisted" | "private"
+    "youtube_privacy": "private",   # "public" | "unlisted" | "private"
 
     # Default episode metadata (can be overridden at runtime)
-    "podcast_title_prefix": "Sermón —",
-    "podcast_description":  "Sermón semanal de nuestra iglesia.",
+    "podcast_title_prefix": "Predicación —",
+    "podcast_description":  "Predicación semanal de nuestra iglesia.",
 
     # Audio loudness target (EBU R128 — -14 LUFS is Spotify's standard)
     "loudness_target": "-14",
@@ -143,7 +143,7 @@ def select_mode():
 def trim_and_normalize(input_file, start_ts, end_ts, output_dir, label):
     """Trim video to sermon timestamps and normalize audio loudness."""
     ensure_dir(output_dir)
-    out_video = os.path.join(output_dir, f"{label}_sermon.mp4")
+    out_video = os.path.join(output_dir, f"{label}_predicacion.mp4")
     target = CONFIG["loudness_target"]
 
     print(f"\n▶ Trimming {start_ts} → {end_ts} and normalizing audio...")
@@ -166,7 +166,7 @@ def trim_and_normalize(input_file, start_ts, end_ts, output_dir, label):
 def export_audio(video_file, output_dir, label):
     """Extract audio from trimmed video and save as MP3."""
     ensure_dir(output_dir)
-    out_audio = os.path.join(output_dir, f"{label}_sermon.mp3")
+    out_audio = os.path.join(output_dir, f"{label}_predicacion.mp3")
 
     print(f"\n▶ Exporting MP3...")
     cmd = [
