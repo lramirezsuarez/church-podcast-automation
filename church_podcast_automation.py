@@ -197,27 +197,155 @@ def print_summary(trimmed_video, audio_file):
     print(f"  Audio (MP3)   : {audio_file}")
     separator("═")
     print()
+    _offer_post_run_clean()
+
+def _offer_post_run_clean():
+    """
+    Offer to clean up files at the end of a successful run.
+    Only shown if there are actually files to delete.
+    Skipped silently if nothing is in output/ or inbox/.
+    """
+    files = gather_cleanable_files()
+    if not files:
+        return
+
+    total_mb = sum(mb for _, _, mb in files)
+    print()
+    separator()
+    print("  OPTIONAL CLEAN-UP\n")
+    print(f"  You have {len(files)} file(s) taking up {total_mb:.1f} MB in output/ and inbox/.")
+    print("  If everything uploaded successfully you can delete them now.")
+    print()
+    print("  [Y] Yes — delete files now")
+    print("  [N] No  — keep them, I\'ll clean up later")
+    separator()
+    choice = menu_prompt("  Clean up files? [Y/N]: ", ["Y", "N"])
+    if choice == "Y":
+        run_clean_files()
+
+# ─────────────────────────────────────────────
+#  CLEAN FILES
+# ─────────────────────────────────────────────
+
+def gather_cleanable_files():
+    """
+    Collect all files that the clean step can delete:
+      - Every .mp4 in output_dir  (raw download + trimmed sermon)
+      - Every .mp3 in output_dir  (exported audio)
+      - Every .mp4 in inbox_dir   (manually downloaded originals)
+    Returns a list of (label, filepath) tuples for existing files only.
+    """
+    output_dir = CONFIG["output_dir"]
+    inbox_dir  = CONFIG["inbox_dir"]
+    files = []
+
+    for d, label in [(output_dir, "output"), (inbox_dir, "inbox")]:
+        if os.path.isdir(d):
+            for ext in ("*.mp4", "*.mp3"):
+                for f in sorted(Path(d).glob(ext)):
+                    size_mb = f.stat().st_size / (1024 * 1024)
+                    files.append((label, str(f), size_mb))
+
+    return files
+
+def run_clean_files():
+    """
+    Interactive clean-up routine with double confirmation.
+    Lists every file to be deleted, asks once to confirm, then
+    asks a second time by typing DELETE to actually proceed.
+    Can be called from the main menu or as a post-run step.
+    Returns True if files were deleted, False if skipped.
+    """
+    files = gather_cleanable_files()
+
+    print()
+    separator("═")
+    print("  CLEAN FILES")
+    separator("═")
+
+    if not files:
+        print("  ✓ Nothing to clean — output/ and inbox/ are already empty.")
+        separator("═")
+        return False
+
+    total_mb = sum(mb for _, _, mb in files)
+    print(f"  The following {len(files)} file(s) will be permanently deleted")
+    print(f"  ({total_mb:.1f} MB total):\n")
+
+    for label, path, mb in files:
+        print(f"  [{label:6s}]  {os.path.basename(path)}  ({mb:.1f} MB)")
+        print(f"           {path}")
+
+    print()
+    separator()
+
+    # First confirmation
+    choice = menu_prompt("  Delete all these files? [Y/N]: ", ["Y", "N"])
+    if choice == "N":
+        print("  ↩ Clean cancelled.")
+        return False
+
+    # Second confirmation — must type DELETE exactly
+    print()
+    print("  ⚠  This cannot be undone.")
+    confirm = input('  Type DELETE to confirm: ').strip()
+    if confirm != "DELETE":
+        print("  ↩ Clean cancelled — text did not match.")
+        return False
+
+    # Delete
+    print()
+    deleted = 0
+    errors  = 0
+    for _, path, _ in files:
+        try:
+            os.remove(path)
+            print(f"  ✓ Deleted: {os.path.basename(path)}")
+            deleted += 1
+        except OSError as e:
+            print(f"  ✗ Could not delete {path}: {e}")
+            errors += 1
+
+    print()
+    if errors == 0:
+        print(f"  ✅ {deleted} file(s) deleted. Folders are now empty and ready for next week.")
+    else:
+        print(f"  ⚠ {deleted} deleted, {errors} failed. Check permissions on the files above.")
+    separator("═")
+    return deleted > 0
 
 # ─────────────────────────────────────────────
 #  MENU — MODE SELECTION
 # ─────────────────────────────────────────────
 
 def select_mode():
-    """Interactive main menu — returns 'A' or 'B'."""
-    print()
-    separator("═")
-    print("  Church Podcast Automation")
-    separator("═")
-    print()
-    print("  Select a mode:\n")
-    print("  [A] Auto      — Download from YouTube, trim, re-upload sermon")
-    print("                  clip to YouTube & open Spotify for Podcasters")
-    print()
-    print("  [B] Manual    — Use a file you already downloaded, trim it,")
-    print("                  save video + MP3 for manual upload later")
-    print()
-    separator()
-    return menu_prompt("  Enter A or B: ", ["A", "B"])
+    """Interactive main menu — returns 'A', 'B', or 'C' (clean)."""
+    while True:
+        print()
+        separator("═")
+        print("  Church Podcast Automation")
+        separator("═")
+        print()
+        print("  Select a mode:\n")
+        print("  [A] Auto      — Download from YouTube, trim, re-upload sermon")
+        print("                  clip to YouTube & open Spotify for Podcasters")
+        print()
+        print("  [B] Manual    — Use a file you already downloaded, trim it,")
+        print("                  save video + MP3 for manual upload later")
+        print()
+        print("  [C] Clean     — Delete previous week\'s downloaded and processed")
+        print("                  files to free up disk space and start fresh")
+        print()
+        separator()
+        choice = menu_prompt("  Enter A, B, or C: ", ["A", "B", "C"])
+
+        if choice == "C":
+            run_clean_files()
+            # After cleaning, loop back to show the menu again
+            input("\n  Press Enter to return to the main menu...")
+            continue
+
+        return choice
 
 # ─────────────────────────────────────────────
 #  MENU — EPISODE METADATA
@@ -878,11 +1006,14 @@ Examples:
   ./run.sh --mode B --file ~/Downloads/service.mp4 \\
     --start 00:32:15 --end 01:18:40 \\
     --title "Sermon Jan 14" --description "Sunday service"
+
+  # Clean up all output and inbox files directly:
+  ./run.sh --mode C
         """
     )
 
-    parser.add_argument("--mode",        choices=["A", "B"],
-                                         help="A = auto download, B = local file")
+    parser.add_argument("--mode",        choices=["A", "B", "C"],
+                                         help="A = auto download, B = local file, C = clean files")
     parser.add_argument("--url",         help="[Mode A] YouTube URL to download")
     parser.add_argument("--latest",      action="store_true",
                                          help="[Mode A] Auto-fetch latest video from your channel")
@@ -900,8 +1031,10 @@ Examples:
 
     if mode == "A":
         run_mode_a(args, today)
-    else:
+    elif mode == "B":
         run_mode_b(args, today)
+    else:
+        run_clean_files()
 
 
 if __name__ == "__main__":

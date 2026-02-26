@@ -16,6 +16,7 @@ The script has two modes you choose from each time you run it:
 5. Lets you choose which YouTube channel to upload the trimmed clip to
 6. Opens YouTube Studio for the uploaded video so you can set audience, tags, and playlist
 7. Opens Spotify for Podcasters in your browser for the audio upload
+8. Offers to delete all working files (raw download, trimmed video, MP3) once everything is uploaded
 
 **Mode B — Manual (local file)**
 1. Uses a `.mp4` you already downloaded from YouTube Studio (auto-detected from `inbox/`)
@@ -24,6 +25,7 @@ The script has two modes you choose from each time you run it:
 4. Saves a trimmed `.mp4` and a `.mp3` — shows a live progress bar
 5. Optionally uploads to YouTube (same channel picker and Studio redirect as Mode A)
 6. Opens Spotify for Podcasters in your browser for the audio upload
+7. Offers to delete all working files (trimmed video, MP3, inbox source) once everything is uploaded
 
 ---
 
@@ -154,8 +156,11 @@ You'll see a mode selection menu:
   [B] Manual    — Use a file you already downloaded, trim it,
                   save video + MP3 for manual upload later
 
+  [C] Clean     — Delete previous week's downloaded and processed
+                  files to free up disk space and start fresh
+
 ────────────────────────────────────────────────────────
-  Enter A or B:
+  Enter A, B, or C:
 ```
 
 ### Interactive menus
@@ -167,6 +172,7 @@ The script walks you through each decision step by step:
 - **Episode metadata** — choose to use the CONFIG defaults or enter a custom title and description
 - **YouTube upload** — confirm upload and pick which channel from a numbered list; YouTube Studio opens automatically after upload so you can set audience, tags, and playlist
 - **Spotify for Podcasters** — the upload page opens in your browser with the file path copied to your clipboard
+- **Optional clean-up** — offered at the end of every successful run; lists all files with sizes and requires double confirmation before deleting anything
 
 ### Skip the menu with flags
 
@@ -193,6 +199,9 @@ You can bypass the menu entirely by passing flags directly:
 # Mode B — point to a specific file
 ./run.sh --mode B --file ~/Downloads/service.mp4
 
+# Clean up all output and inbox files directly (no other steps run):
+./run.sh --mode C
+
 # Mode B — pass everything upfront, no prompts
 ./run.sh --mode B \
   --file ~/Downloads/service.mp4 \
@@ -206,7 +215,7 @@ You can bypass the menu entirely by passing flags directly:
 
 | Flag | Mode | Description |
 |---|---|---|
-| `--mode A\|B` | Both | Skip the menu and go directly to a mode |
+| `--mode A\|B\|C` | Both | Skip the menu and go directly to a mode (C = clean) |
 | `--url "https://..."` | A | YouTube URL to download |
 | `--latest` | A | Auto-fetch the latest video from your channel |
 | `--file path/to/video.mp4` | B | Path to a local `.mp4` file |
@@ -280,6 +289,41 @@ The manual upload takes about 30 seconds.
 
 ---
 
+## Clean Files
+
+After you have confirmed that everything uploaded successfully — the sermon clip is live on YouTube and the podcast episode is published on Spotify — you can delete all the working files to free up disk space and keep things tidy for next week.
+
+There are three ways to trigger the clean-up:
+
+**1. At the end of every run (automatic prompt)**
+After the summary screen, the script automatically checks whether files exist and offers to delete them. You can say yes or no — nothing is deleted without your confirmation.
+
+**2. From the main menu**
+Select `[C] Clean` from the mode selection menu at any time, including before starting a new run.
+
+**3. Directly from the command line**
+```bash
+./run.sh --mode C
+```
+
+### What gets deleted
+
+| Location | Files |
+|---|---|
+| `output/` | Original full download `.mp4` (Mode A), trimmed sermon `.mp4`, exported `.mp3` |
+| `inbox/` | Manually downloaded `.mp4` source files (Mode B) |
+
+### Double confirmation
+
+The clean step always shows a full list of files with their sizes and requires two confirmations before deleting anything:
+
+1. First prompt: `[Y/N]` — confirm you want to proceed
+2. Second prompt: type `DELETE` exactly — final irreversible confirmation
+
+If either confirmation is not completed correctly, nothing is deleted.
+
+---
+
 ## Output Files
 
 ```
@@ -308,3 +352,5 @@ podcast_output/
 | Audio still too quiet | Lower `loudness_target` in CONFIG to `-12` or `-10` |
 | `client_secrets.json` not found | See YouTube API Setup section above |
 | Auto-detect timestamps are wrong | Choose `[A] Adjust manually` when prompted, or use `--start` / `--end` flags next time |
+| Clean deleted files by mistake | Files are permanently deleted — restore from a backup or Time Machine if needed |
+| Clean shows no files | `output/` and `inbox/` are already empty — nothing to delete |
