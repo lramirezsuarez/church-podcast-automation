@@ -12,12 +12,14 @@ Two modes:
   MODE B — Manual (local file):
     Uses a .mp4 you already downloaded, trims and normalizes it,
     saves the trimmed video and MP3 to podcast_output/, and
-    opens Spotify for Podcasters. YouTube upload is skipped.
+    opens Spotify for Podcasters. YouTube upload is skipped by default
+    but can optionally be triggered.
 
 Run: ./run.sh
 """
 
 import os
+import re
 import sys
 import subprocess
 import argparse
@@ -51,9 +53,9 @@ CONFIG = {
     # YouTube upload privacy for the trimmed sermon clip
     "youtube_privacy": "private",   # "public" | "unlisted" | "private"
 
-    # Default episode metadata (can be overridden at runtime)
-    "podcast_title_prefix": "Predicación —",
-    "podcast_description":  "Predicación semanal de nuestra iglesia.",
+    # Default episode metadata (offered as defaults at runtime)
+    "podcast_title_prefix": "Sermón —",
+    "podcast_description":  "Sermón semanal de nuestra iglesia.",
 
     # Audio loudness target (EBU R128 — -14 LUFS is Spotify's standard)
     "loudness_target": "-14",
@@ -70,6 +72,17 @@ CONFIG = {
 def ensure_dir(path):
     Path(path).mkdir(parents=True, exist_ok=True)
 
+def separator(char="─", width=56):
+    print(char * width)
+
+def menu_prompt(prompt, choices):
+    """Show a prompt and keep asking until a valid choice is entered."""
+    while True:
+        choice = input(prompt).strip().upper()
+        if choice in choices:
+            return choice
+        print(f"  Please enter one of: {', '.join(choices)}")
+
 def timestamp_to_seconds(ts):
     """Convert HH:MM:SS or MM:SS to seconds."""
     parts = ts.strip().split(":")
@@ -80,42 +93,47 @@ def timestamp_to_seconds(ts):
         return parts[0] * 3600 + parts[1] * 60 + parts[2]
     raise ValueError(f"Invalid timestamp '{ts}' — use HH:MM:SS or MM:SS")
 
+def seconds_to_timestamp(secs):
+    """Convert seconds to HH:MM:SS string."""
+    secs = int(secs)
+    h, rem = divmod(secs, 3600)
+    m, s   = divmod(rem, 60)
+    return f"{h:02}:{m:02}:{s:02}"
+
 def find_latest_mp4(folder):
     """Return the most recently modified .mp4 in a folder, or None."""
     files = sorted(Path(folder).glob("*.mp4"), key=os.path.getmtime, reverse=True)
     return str(files[0]) if files else None
 
-def separator(char="─", width=56):
-    print(char * width)
+def get_video_duration(filepath):
+    """Return duration of a video file in seconds using ffprobe."""
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        filepath,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return float(result.stdout.strip())
 
-def ask_timestamps(args):
-    """Prompt for start/end timestamps and validate them."""
-    separator()
-    print("TRIM TIMESTAMPS  (format: HH:MM:SS or MM:SS)")
-    separator()
-    start_ts = args.start or input("Sermon START time (e.g. 00:32:15): ").strip()
-    end_ts   = args.end   or input("Sermon END time   (e.g. 01:18:40): ").strip()
-    try:
-        timestamp_to_seconds(start_ts)
-        timestamp_to_seconds(end_ts)
-    except ValueError as e:
-        print(f"✗ {e}")
-        sys.exit(1)
-    return start_ts, end_ts
+def print_summary(trimmed_video, audio_file):
+    print()
+    separator("═")
+    print("  ✅  ALL DONE!")
+    separator("═")
+    print(f"  Trimmed video : {trimmed_video}")
+    print(f"  Audio (MP3)   : {audio_file}")
+    separator("═")
+    print()
 
-def ask_episode_title(args, today):
-    """Prompt for episode title with a sensible default."""
-    if args.title:
-        return args.title
-    default = f"{CONFIG['podcast_title_prefix']} {today}"
-    typed = input(f"\nEpisode title [{default}]: ").strip()
-    return typed if typed else default
+# ─────────────────────────────────────────────
+#  MENU — MODE SELECTION
+# ─────────────────────────────────────────────
 
 def select_mode():
-    """
-    Show a mode-selection menu and return "A" or "B".
-    Can be bypassed with --mode A|B on the command line.
-    """
+    """Interactive main menu — returns 'A' or 'B'."""
     print()
     separator("═")
     print("  Church Podcast Automation")
@@ -129,12 +147,190 @@ def select_mode():
     print("                  save video + MP3 for manual upload later")
     print()
     separator()
+    return menu_prompt("  Enter A or B: ", ["A", "B"])
 
+# ─────────────────────────────────────────────
+#  MENU — EPISODE METADATA
+# ─────────────────────────────────────────────
+
+def ask_episode_metadata(args, today):
+    """
+    Ask the user whether to use CONFIG defaults or enter custom metadata.
+    Returns (title, description).
+    """
+    # If both were passed as flags, skip the menu entirely
+    if args.title and args.description:
+        return args.title, args.description
+
+    default_title = f"{CONFIG['podcast_title_prefix']} {today}"
+    default_desc  = CONFIG["podcast_description"]
+
+    print()
+    separator()
+    print("  EPISODE METADATA\n")
+    print(f"  Default title       : {default_title}")
+    print(f"  Default description : {default_desc}")
+    print()
+    print("  [U] Use these defaults")
+    print("  [C] Enter custom values")
+    separator()
+    choice = menu_prompt("  Enter U or C: ", ["U", "C"])
+
+    if choice == "U":
+        title = args.title or default_title
+        desc  = args.description or default_desc
+    else:
+        title_input = input(f"\n  Episode title [{default_title}]: ").strip()
+        title = title_input if title_input else default_title
+
+        desc_input = input(f"  Description [{default_desc}]: ").strip()
+        desc = desc_input if desc_input else default_desc
+
+    print(f"\n  ✓ Title       : {title}")
+    print(f"  ✓ Description : {desc}")
+    return title, desc
+
+# ─────────────────────────────────────────────
+#  MENU — TIMESTAMP DETECTION
+# ─────────────────────────────────────────────
+
+def ask_timestamps(args, video_file=None):
+    """
+    Ask the user how to set sermon timestamps:
+      [M] Manual   — type start and end times
+      [A] Auto     — detect silence/music breaks in the audio
+    Returns (start_ts, end_ts) as HH:MM:SS strings.
+    """
+    # If passed directly as flags, skip the menu
+    if args.start and args.end:
+        try:
+            timestamp_to_seconds(args.start)
+            timestamp_to_seconds(args.end)
+        except ValueError as e:
+            print(f"✗ {e}")
+            sys.exit(1)
+        return args.start, args.end
+
+    print()
+    separator()
+    print("  SERMON TIMESTAMPS\n")
+    print("  [M] Manual      — I'll enter the start and end times myself")
+    print("  [A] Auto-detect — Scan the audio to find the sermon boundaries")
+    separator()
+    choice = menu_prompt("  Enter M or A: ", ["M", "A"])
+
+    if choice == "M":
+        return ask_timestamps_manual()
+    else:
+        return ask_timestamps_auto(video_file)
+
+def ask_timestamps_manual():
+    """Prompt the user to type start and end timestamps."""
+    separator()
+    print("  Format: HH:MM:SS  or  MM:SS")
+    separator()
     while True:
-        choice = input("  Enter A or B: ").strip().upper()
-        if choice in ("A", "B"):
-            return choice
-        print("  Please enter A or B.")
+        start_str = input("  Sermon START time (e.g. 00:32:15): ").strip()
+        try:
+            timestamp_to_seconds(start_str)
+            break
+        except ValueError as e:
+            print(f"  ✗ {e}")
+    while True:
+        end_str = input("  Sermon END time   (e.g. 01:18:40): ").strip()
+        try:
+            timestamp_to_seconds(end_str)
+            break
+        except ValueError as e:
+            print(f"  ✗ {e}")
+    return start_str, end_str
+
+def ask_timestamps_auto(video_file):
+    """
+    Auto-detect sermon boundaries by scanning for long silence gaps in the audio.
+
+    Strategy:
+      - Run ffmpeg silencedetect to find all silent segments
+      - The sermon typically starts after the first long music/intro block
+        and ends before the final music/outro block
+      - We find the two longest silent gaps and treat the edges of those as
+        the sermon start and end
+      - Show the user the detected timestamps and let them confirm or adjust
+    """
+    if not video_file or not os.path.exists(video_file):
+        print("  ✗ No video file available for auto-detection. Falling back to manual.")
+        return ask_timestamps_manual()
+
+    print(f"\n  Scanning audio for silence gaps in: {os.path.basename(video_file)}")
+    print("  This may take a moment...\n")
+
+    # silencedetect: mark silence below -35dB lasting at least 2 seconds
+    cmd = [
+        "ffmpeg", "-i", video_file,
+        "-af", "silencedetect=noise=-35dB:d=2",
+        "-f", "null", "-",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    output = result.stderr  # ffmpeg writes filter output to stderr
+
+    # Parse silence_start / silence_end pairs
+    starts = [float(m) for m in re.findall(r"silence_start: (\S+)", output)]
+    ends   = [float(m) for m in re.findall(r"silence_end: (\S+)", output)]
+
+    if len(starts) < 2:
+        print("  ⚠ Not enough silence detected for auto-detection.")
+        print("  This can happen if the audio is consistently loud throughout.")
+        print("  Falling back to manual timestamps.\n")
+        return ask_timestamps_manual()
+
+    # Build list of (duration, start, end) for each silent segment
+    pairs = []
+    for s, e in zip(starts, ends):
+        pairs.append((e - s, s, e))
+    pairs.sort(reverse=True)  # longest gaps first
+
+    # The sermon start = end of the first (longest) silence gap in the first half
+    # The sermon end   = start of the first (longest) silence gap in the second half
+    duration = get_video_duration(video_file) or 9999
+    midpoint = duration / 2
+
+    intro_gaps  = [(d, s, e) for d, s, e in pairs if e < midpoint]
+    outro_gaps  = [(d, s, e) for d, s, e in pairs if s > midpoint]
+
+    if not intro_gaps or not outro_gaps:
+        print("  ⚠ Could not find silence gaps on both sides of the midpoint.")
+        print("  Falling back to manual timestamps.\n")
+        return ask_timestamps_manual()
+
+    # Pick the longest gap in each half
+    _, _is, intro_end = intro_gaps[0]
+    _, outro_start, _ = outro_gaps[0]
+
+    detected_start = seconds_to_timestamp(intro_end)
+    detected_end   = seconds_to_timestamp(outro_start)
+
+    print(f"  ✓ Detected sermon START : {detected_start}")
+    print(f"  ✓ Detected sermon END   : {detected_end}")
+    print()
+    print("  [U] Use these timestamps")
+    print("  [A] Adjust manually")
+    separator()
+    choice = menu_prompt("  Enter U or A: ", ["U", "A"])
+
+    if choice == "U":
+        return detected_start, detected_end
+    else:
+        print(f"\n  Current values — Start: {detected_start}  End: {detected_end}")
+        print("  Press Enter to keep a value, or type a new one.\n")
+        new_start = input(f"  START [{detected_start}]: ").strip() or detected_start
+        new_end   = input(f"  END   [{detected_end}]: ").strip() or detected_end
+        try:
+            timestamp_to_seconds(new_start)
+            timestamp_to_seconds(new_end)
+        except ValueError as e:
+            print(f"  ✗ {e}")
+            sys.exit(1)
+        return new_start, new_end
 
 # ─────────────────────────────────────────────
 #  SHARED: TRIM + NORMALIZE + EXPORT AUDIO
@@ -208,16 +404,6 @@ def open_spotify_for_podcasters(audio_file, episode_title):
 
     webbrowser.open("https://podcasters.spotify.com/pod/dashboard/episode/new")
 
-def print_summary(trimmed_video, audio_file):
-    print()
-    separator("═")
-    print("  ✅  ALL DONE!")
-    separator("═")
-    print(f"  Trimmed video : {trimmed_video}")
-    print(f"  Audio (MP3)   : {audio_file}")
-    separator("═")
-    print()
-
 # ─────────────────────────────────────────────
 #  MODE A — AUTO (download + full pipeline)
 # ─────────────────────────────────────────────
@@ -277,6 +463,35 @@ def download_youtube(url, output_dir):
     print(f"✓ Downloaded: {filepath}")
     return filepath
 
+def select_youtube_source(args):
+    """
+    Ask the user how to get the YouTube video for Mode A:
+      [L] Latest  — auto-fetch the latest video from the configured channel
+      [U] URL     — paste a specific video URL
+    Can be bypassed with --latest or --url flags.
+    """
+    if args.latest:
+        return "latest", None
+    if args.url:
+        return "url", args.url
+
+    print()
+    separator()
+    print("  YOUTUBE SOURCE\n")
+    print("  [L] Latest video  — Auto-fetch the latest from your channel")
+    print("  [U] Paste URL     — I'll provide a specific video link")
+    separator()
+    choice = menu_prompt("  Enter L or U: ", ["L", "U"])
+
+    if choice == "L":
+        return "latest", None
+    else:
+        url = input("\n  Paste the YouTube URL: ").strip()
+        if not url:
+            print("✗ No URL provided.")
+            sys.exit(1)
+        return "url", url
+
 def get_latest_channel_video():
     """Return the URL of the most recent public video on the configured channel."""
     try:
@@ -325,8 +540,8 @@ def _get_youtube_credentials(readonly=False):
         else:
             if not os.path.exists(CONFIG["client_secrets_file"]):
                 print(
-                    f"\n✗ Missing '{CONFIG['client_secrets_file']}'.\n"
-                    "  See README.md — YouTube API Setup section."
+                    f"\n✗ Missing '{CONFIG['client_secrets_file']}'."
+                    "\n  See README.md — YouTube API Setup section."
                 )
                 sys.exit(1)
             flow = InstalledAppFlow.from_client_secrets_file(
@@ -338,8 +553,54 @@ def _get_youtube_credentials(readonly=False):
 
     return creds
 
+def select_upload_channel(youtube):
+    """
+    List all channels the authenticated account can manage and let the
+    user pick which one to upload to.
+
+    Accounts that manage Brand Accounts (e.g. a church channel) will see
+    multiple channels listed. The user picks by number and the chosen
+    channel ID is returned so the upload targets it explicitly.
+    """
+    print("\n▶ Fetching channels available to your account...")
+    response = youtube.channels().list(
+        part="snippet",
+        mine=True,
+        maxResults=50,
+    ).execute()
+
+    channels = response.get("items", [])
+
+    if not channels:
+        print("  ✗ No channels found. Make sure you are authenticated correctly.")
+        sys.exit(1)
+
+    if len(channels) == 1:
+        ch = channels[0]
+        print(f"  ✓ Only one channel found: {ch['snippet']['title']} ({ch['id']})")
+        return ch["id"]
+
+    # Multiple channels — let the user pick
+    print()
+    separator()
+    print("  SELECT UPLOAD CHANNEL\n")
+    for i, ch in enumerate(channels, 1):
+        title = ch["snippet"]["title"]
+        cid   = ch["id"]
+        tag   = "  ← personal (default)" if i == 1 else ""
+        print(f"  [{i}] {title}  ({cid}){tag}")
+    separator()
+
+    while True:
+        raw = input(f"  Enter channel number (1–{len(channels)}): ").strip()
+        if raw.isdigit() and 1 <= int(raw) <= len(channels):
+            chosen = channels[int(raw) - 1]
+            print(f"\n  ✓ Selected: {chosen['snippet']['title']}")
+            return chosen["id"]
+        print(f"  Please enter a number between 1 and {len(channels)}.")
+
 def upload_to_youtube(video_file, title, description, privacy="public"):
-    """Upload trimmed video to YouTube using the Data API v3."""
+    """Upload trimmed video to the selected YouTube channel."""
     try:
         from googleapiclient.discovery import build
         from googleapiclient.http import MediaFileUpload
@@ -347,9 +608,13 @@ def upload_to_youtube(video_file, title, description, privacy="public"):
         print("✗ google-api-python-client not installed. Run ./setup.sh")
         sys.exit(1)
 
-    print(f"\n▶ Uploading to YouTube: {title}")
-    creds = _get_youtube_credentials()
+    creds   = _get_youtube_credentials()
     youtube = build("youtube", "v3", credentials=creds)
+
+    # Let the user pick which channel to upload to
+    channel_id = select_upload_channel(youtube)
+
+    print(f"\n▶ Uploading: {title}")
 
     body = {
         "snippet": {
@@ -361,7 +626,13 @@ def upload_to_youtube(video_file, title, description, privacy="public"):
     }
 
     media   = MediaFileUpload(video_file, chunksize=-1, resumable=True, mimetype="video/mp4")
-    request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
+    request = youtube.videos().insert(
+        part="snippet,status",
+        body=body,
+        media_body=media,
+        # onBehalfOfContentOwnerChannel targets the chosen Brand Account channel
+        onBehalfOfContentOwnerChannel=channel_id if channel_id else None,
+    )
 
     response = None
     while response is None:
@@ -373,40 +644,46 @@ def upload_to_youtube(video_file, title, description, privacy="public"):
     print(f"\n✓ Uploaded: https://www.youtube.com/watch?v={video_id}")
     return video_id
 
+def ask_youtube_upload(args, trimmed_video, episode_title, description):
+    """Ask the user whether to upload to YouTube, then do it if confirmed."""
+    print()
+    separator()
+    print("  YOUTUBE UPLOAD\n")
+    print(f"  Title   : {episode_title}")
+    print(f"  Privacy : {args.privacy or CONFIG['youtube_privacy']}")
+    print()
+    print("  [Y] Yes — upload to YouTube now")
+    print("  [N] No  — skip, I'll upload manually later")
+    separator()
+    choice = menu_prompt("  Upload to YouTube? [Y/N]: ", ["Y", "N"])
+    if choice == "Y":
+        upload_to_youtube(
+            trimmed_video, episode_title, description,
+            args.privacy or CONFIG["youtube_privacy"]
+        )
+
 def run_mode_a(args, today):
     """MODE A — Download from YouTube, trim, re-upload, open Spotify."""
     print("\n  Mode A — Auto Pipeline\n")
     output_dir = CONFIG["output_dir"]
 
-    # Get source URL
-    if args.latest:
+    # YouTube source selection (menu or flags)
+    source_type, url = select_youtube_source(args)
+    if source_type == "latest":
         url = get_latest_channel_video()
-    elif args.url:
-        url = args.url
-    else:
-        url = input("\nPaste the YouTube URL of this week's broadcast: ").strip()
-        if not url:
-            print("✗ No URL provided.")
-            sys.exit(1)
 
-    raw_video     = download_youtube(url, output_dir)
-    start_ts, end_ts = ask_timestamps(args)
-    episode_title = ask_episode_title(args, today)
-    description   = CONFIG["podcast_description"]
-    trimmed_video = trim_and_normalize(raw_video, start_ts, end_ts, output_dir, today)
-    audio_file    = export_audio(trimmed_video, output_dir, today)
+    raw_video              = download_youtube(url, output_dir)
+    start_ts, end_ts       = ask_timestamps(args, video_file=raw_video)
+    episode_title, desc    = ask_episode_metadata(args, today)
+    trimmed_video          = trim_and_normalize(raw_video, start_ts, end_ts, output_dir, today)
+    audio_file             = export_audio(trimmed_video, output_dir, today)
 
-    # YouTube re-upload
-    confirm = input(f"\nUpload trimmed video to YouTube as '{episode_title}'? [Y/n]: ").strip().lower()
-    if confirm != "n":
-        upload_to_youtube(trimmed_video, episode_title, description,
-                          args.privacy or CONFIG["youtube_privacy"])
-
+    ask_youtube_upload(args, trimmed_video, episode_title, desc)
     open_spotify_for_podcasters(audio_file, episode_title)
     print_summary(trimmed_video, audio_file)
 
 # ─────────────────────────────────────────────
-#  MODE B — MANUAL (local file, export only)
+#  MODE B — MANUAL (local file)
 # ─────────────────────────────────────────────
 
 def locate_local_file(file_arg):
@@ -429,13 +706,13 @@ def locate_local_file(file_arg):
     latest = find_latest_mp4(inbox)
     if latest:
         print(f"\n✓ Found in inbox: {latest}")
-        confirm = input("  Use this file? [Y/n]: ").strip().lower()
-        if confirm != "n":
+        confirm = input("  Use this file? [Y/n]: ").strip().upper()
+        if confirm != "N":
             return latest
 
     print(f"\n  Place the broadcast .mp4 in:  {os.path.abspath(inbox)}/")
     print("  Or enter the full path to the file:\n")
-    path = input("Path to .mp4: ").strip().strip("'\"")
+    path = input("  Path to .mp4: ").strip().strip("'\"")
     path = os.path.expanduser(path)
     if not os.path.exists(path):
         print(f"✗ File not found: {path}")
@@ -443,15 +720,18 @@ def locate_local_file(file_arg):
     return path
 
 def run_mode_b(args, today):
-    """MODE B — Trim local file, export video + MP3, open Spotify."""
+    """MODE B — Trim local file, export video + MP3, optionally upload to YouTube."""
     print("\n  Mode B — Manual File\n")
     output_dir = CONFIG["output_dir"]
 
-    source_file   = locate_local_file(args.file)
-    start_ts, end_ts = ask_timestamps(args)
-    episode_title = ask_episode_title(args, today)
-    trimmed_video = trim_and_normalize(source_file, start_ts, end_ts, output_dir, today)
-    audio_file    = export_audio(trimmed_video, output_dir, today)
+    source_file            = locate_local_file(args.file)
+    start_ts, end_ts       = ask_timestamps(args, video_file=source_file)
+    episode_title, desc    = ask_episode_metadata(args, today)
+    trimmed_video          = trim_and_normalize(source_file, start_ts, end_ts, output_dir, today)
+    audio_file             = export_audio(trimmed_video, output_dir, today)
+
+    # Optional YouTube upload — available in Mode B too
+    ask_youtube_upload(args, trimmed_video, episode_title, desc)
 
     open_spotify_for_podcasters(audio_file, episode_title)
     print_summary(trimmed_video, audio_file)
@@ -466,32 +746,43 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Interactive menu (recommended):
+  # Interactive menu (recommended — guides you through everything):
   ./run.sh
 
-  # Force Mode A (auto download + upload):
-  ./run.sh --mode A --url "https://www.youtube.com/watch?v=XXXXX"
+  # Mode A, prompted for URL:
+  ./run.sh --mode A
 
-  # Force Mode A, fetch latest from channel automatically:
+  # Mode A, auto-fetch latest video from channel:
   ./run.sh --mode A --latest
 
-  # Force Mode B (local file):
+  # Mode A, pass a specific URL:
+  ./run.sh --mode A --url "https://www.youtube.com/watch?v=XXXXX"
+
+  # Mode B, auto-detect file from inbox/:
+  ./run.sh --mode B
+
+  # Mode B, point to a specific file:
   ./run.sh --mode B --file ~/Downloads/service.mp4
 
-  # Skip prompts entirely:
-  ./run.sh --mode B --file ~/Downloads/service.mp4 --start 00:32:15 --end 01:18:40 --title "Sermon Jan 14"
+  # Fully non-interactive (skip all menus):
+  ./run.sh --mode B --file ~/Downloads/service.mp4 \\
+    --start 00:32:15 --end 01:18:40 \\
+    --title "Sermon Jan 14" --description "Sunday service"
         """
     )
 
-    parser.add_argument("--mode",   choices=["A", "B"], help="A = auto download, B = local file")
-    parser.add_argument("--url",    help="[Mode A] YouTube URL to download")
-    parser.add_argument("--latest", action="store_true", help="[Mode A] Download latest video from your channel")
-    parser.add_argument("--file",   help="[Mode B] Path to a local .mp4 file")
-    parser.add_argument("--start",  help="Sermon start timestamp, e.g. 00:32:15")
-    parser.add_argument("--end",    help="Sermon end timestamp,   e.g. 01:18:40")
-    parser.add_argument("--title",  help="Episode title (default: auto-generated from date)")
-    parser.add_argument("--privacy", choices=["public", "unlisted", "private"],
-                        help="[Mode A] YouTube upload privacy (default: public)")
+    parser.add_argument("--mode",        choices=["A", "B"],
+                                         help="A = auto download, B = local file")
+    parser.add_argument("--url",         help="[Mode A] YouTube URL to download")
+    parser.add_argument("--latest",      action="store_true",
+                                         help="[Mode A] Auto-fetch latest video from your channel")
+    parser.add_argument("--file",        help="[Mode B] Path to a local .mp4 file")
+    parser.add_argument("--start",       help="Sermon start timestamp, e.g. 00:32:15")
+    parser.add_argument("--end",         help="Sermon end timestamp,   e.g. 01:18:40")
+    parser.add_argument("--title",       help="Episode title")
+    parser.add_argument("--description", help="Episode description")
+    parser.add_argument("--privacy",     choices=["public", "unlisted", "private"],
+                                         help="YouTube upload privacy (default: from CONFIG)")
 
     args  = parser.parse_args()
     today = datetime.today().strftime("%Y-%m-%d")
