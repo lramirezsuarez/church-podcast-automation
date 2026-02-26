@@ -143,7 +143,7 @@ def select_mode():
 def trim_and_normalize(input_file, start_ts, end_ts, output_dir, label):
     """Trim video to sermon timestamps and normalize audio loudness."""
     ensure_dir(output_dir)
-    out_video = os.path.join(output_dir, f"{label}_predicacion.mp4")
+    out_video = os.path.join(output_dir, f"{label}_sermon.mp4")
     target = CONFIG["loudness_target"]
 
     print(f"\n▶ Trimming {start_ts} → {end_ts} and normalizing audio...")
@@ -166,7 +166,7 @@ def trim_and_normalize(input_file, start_ts, end_ts, output_dir, label):
 def export_audio(video_file, output_dir, label):
     """Extract audio from trimmed video and save as MP3."""
     ensure_dir(output_dir)
-    out_audio = os.path.join(output_dir, f"{label}_predicacion.mp3")
+    out_audio = os.path.join(output_dir, f"{label}_sermon.mp3")
 
     print(f"\n▶ Exporting MP3...")
     cmd = [
