@@ -56,7 +56,7 @@ CONFIG = {
 
     # Your YouTube channel ID — used in Mode A to auto-fetch latest video
     # Find it at: https://www.youtube.com/account_advanced
-    "youtube_channel_id": "UCxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "youtube_channel_id": "UC4-H_05JkR-SdD07e5fD_uA",
 
     # YouTube upload privacy for the trimmed sermon clip
     "youtube_privacy": "private",   # "public" | "unlisted" | "private"
