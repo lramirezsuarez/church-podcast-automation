@@ -64,7 +64,7 @@ CONFIG = {
     "youtube_channel_id": "UCxxxxxxxxxxxxxxxxxxxxxxxxx",
 
     # YouTube upload privacy for the trimmed sermon clip
-    "youtube_privacy": "private",   # "public" | "unlisted" | "private"
+    "youtube_privacy": "private",  # "public" | "unlisted" | "private"
 
     # Default episode metadata (offered as defaults at runtime)
     "podcast_title_prefix": "Sermón —",
@@ -193,13 +193,15 @@ def ffmpeg_with_progress(cmd, label, duration_secs=None):
         print(f"\n✗ {label} failed:\n{err}")
         sys.exit(1)
 
-def print_summary(trimmed_video, audio_file):
+def print_summary(trimmed_video, audio_file, thumbnail_file=None):
     print()
     separator("═")
     print("  ✅  ALL DONE!")
     separator("═")
     print(f"  Trimmed video : {trimmed_video}")
     print(f"  Audio (MP3)   : {audio_file}")
+    if thumbnail_file and os.path.exists(thumbnail_file):
+        print(f"  Thumbnail     : {thumbnail_file}")
     separator("═")
     print()
     _offer_post_run_clean()
@@ -360,14 +362,24 @@ def select_mode():
 #  MENU — EPISODE METADATA
 # ─────────────────────────────────────────────
 
-def ask_episode_metadata(args, today):
+def ask_episode_metadata(args, today, source_meta=None):
     """
-    Ask the user whether to use CONFIG defaults or enter custom metadata.
-    Returns (title, description).
+    Ask the user how to set episode metadata for the uploaded video.
+
+    Options shown:
+      [D] Defaults   — CONFIG prefix + today's date, default description
+      [R] Reuse      — copy title/description/tags from the source video
+                       (only shown when source_meta is provided)
+      [C] Custom     — type everything manually
+
+    Also prompts for YouTube upload privacy (default: CONFIG value = private).
+
+    Returns (title, description, tags, privacy).
     """
-    # If both were passed as flags, skip the menu entirely
+    # Flags bypass the menu
     if args.title and args.description:
-        return args.title, args.description
+        privacy = args.privacy or CONFIG["youtube_privacy"]
+        return args.title, args.description, [], privacy
 
     default_title = f"{CONFIG['podcast_title_prefix']} {today}"
     default_desc  = CONFIG["podcast_description"]
@@ -375,27 +387,64 @@ def ask_episode_metadata(args, today):
     print()
     separator()
     print("  EPISODE METADATA\n")
-    print(f"  Default title       : {default_title}")
-    print(f"  Default description : {default_desc}")
+
+    # Build option list dynamically
+    options = ["D"]
+    print(f"  [D] Use defaults")
+    print(f"      Title       : {default_title}")
+    print(f"      Description : {default_desc[:80]}{'...' if len(default_desc) > 80 else ''}")
+    if source_meta:
+        options.append("R")
+        print()
+        print(f"  [R] Reuse from original video")
+        print(f"      Title       : {source_meta['title'][:70]}{'...' if len(source_meta['title']) > 70 else ''}")
+        tags_preview = ", ".join(source_meta["tags"][:5])
+        if source_meta["tags"]:
+            print(f"      Tags        : {tags_preview}{'...' if len(source_meta['tags']) > 5 else ''}")
+    options.append("C")
     print()
-    print("  [U] Use these defaults")
     print("  [C] Enter custom values")
     separator()
-    choice = menu_prompt("  Enter U or C: ", ["U", "C"])
+    choice = menu_prompt(f"  Enter {'/'.join(options)}: ", options)
 
-    if choice == "U":
+    if choice == "D":
         title = args.title or default_title
         desc  = args.description or default_desc
+        tags  = []
+    elif choice == "R" and source_meta:
+        title = source_meta["title"]
+        desc  = source_meta["description"]
+        tags  = source_meta["tags"]
+        print(f"\n  ✓ Using original title       : {title}")
+        print(f"  ✓ Using original description : {desc[:60]}{'...' if len(desc) > 60 else ''}")
+        if tags:
+            print(f"  ✓ Using original tags        : {len(tags)} tag(s)")
     else:
         title_input = input(f"\n  Episode title [{default_title}]: ").strip()
         title = title_input if title_input else default_title
 
         desc_input = input(f"  Description [{default_desc}]: ").strip()
         desc = desc_input if desc_input else default_desc
+        tags = []
 
-    print(f"\n  ✓ Title       : {title}")
-    print(f"  ✓ Description : {desc}")
-    return title, desc
+    # ── Privacy selection ────────────────────────────────────────
+    print()
+    separator()
+    print("  YOUTUBE PRIVACY\n")
+    config_default = args.privacy or CONFIG["youtube_privacy"]
+    privacy_map    = {"1": "private", "2": "unlisted", "3": "public"}
+    current_idx    = {"private": "1", "unlisted": "2", "public": "3"}.get(config_default, "1")
+    print(f"  [1] Private   — only you can see it")
+    print(f"  [2] Unlisted  — anyone with the link can see it")
+    print(f"  [3] Public    — visible to everyone")
+    print(f"\n  (default: {config_default})")
+    separator()
+    raw = input(f"  Enter 1, 2, or 3 [{current_idx}]: ").strip()
+    privacy = privacy_map.get(raw, config_default)
+
+    print(f"\n  ✓ Title   : {title}")
+    print(f"  ✓ Privacy : {privacy}")
+    return title, desc, tags, privacy
 
 # ─────────────────────────────────────────────
 #  MENU — TIMESTAMP DETECTION
@@ -614,6 +663,80 @@ def open_spotify_for_podcasters(audio_file, episode_title):
 # ─────────────────────────────────────────────
 #  MODE A — AUTO (download + full pipeline)
 # ─────────────────────────────────────────────
+
+
+def fetch_video_metadata(url):
+    """
+    Fetch title, description, tags, category, and thumbnail URL for a
+    YouTube video using yt-dlp (no API key required).
+    Returns a dict, or None if fetching fails.
+    """
+    print("\n  Fetching original video metadata...")
+    cmd = [
+        sys.executable, "-m", "yt_dlp",
+        "--dump-json", "--no-playlist",
+        "--cookies-from-browser", "chrome",
+        url,
+    ]
+    # Try each browser in turn
+    for browser in ["chrome", "safari", "firefox"]:
+        cmd = [
+            sys.executable, "-m", "yt_dlp",
+            "--dump-json", "--no-playlist",
+            "--cookies-from-browser", browser,
+            url,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0 and result.stdout.strip():
+            break
+    else:
+        # Last resort: no cookies
+        cmd = [
+            sys.executable, "-m", "yt_dlp",
+            "--dump-json", "--no-playlist",
+            url,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0 or not result.stdout.strip():
+        print("  ⚠ Could not fetch metadata — will use manual values.")
+        return None
+
+    import json as _json
+    try:
+        info = _json.loads(result.stdout)
+    except Exception:
+        return None
+
+    return {
+        "title":       info.get("title", ""),
+        "description": info.get("description", ""),
+        "tags":        info.get("tags", []),
+        "category_id": info.get("categories", ["22"])[0] if info.get("categories") else "22",
+        "thumbnail":   info.get("thumbnail", ""),   # best available thumbnail URL
+    }
+
+
+def download_thumbnail(thumbnail_url, output_dir, label):
+    """
+    Download the thumbnail image to output_dir/<label>_thumbnail.<ext>.
+    Returns the saved filepath, or None on failure.
+    """
+    if not thumbnail_url:
+        return None
+    import urllib.request
+    # Infer extension from URL (default jpg)
+    ext = thumbnail_url.split("?")[0].rsplit(".", 1)[-1]
+    if ext.lower() not in ("jpg", "jpeg", "png", "webp"):
+        ext = "jpg"
+    dest = os.path.join(output_dir, f"{label}_thumbnail.{ext}")
+    try:
+        urllib.request.urlretrieve(thumbnail_url, dest)
+        print(f"  ✓ Thumbnail saved: {dest}")
+        return dest
+    except Exception as e:
+        print(f"  ⚠ Could not download thumbnail: {e}")
+        return None
 
 def download_youtube(url, output_dir):
     """
@@ -838,8 +961,12 @@ def select_upload_channel(youtube):
             return chosen["id"]
         print(f"  Please enter a number between 1 and {len(channels)}.")
 
-def upload_to_youtube(video_file, title, description, privacy="public"):
-    """Upload trimmed video to the selected YouTube channel."""
+def upload_to_youtube(video_file, title, description, privacy="private",
+                      tags=None, thumbnail_file=None):
+    """
+    Upload trimmed video to the selected YouTube channel.
+    Optionally sets tags and uploads a thumbnail after the video is live.
+    """
     try:
         from googleapiclient.discovery import build
         from googleapiclient.http import MediaFileUpload
@@ -847,30 +974,24 @@ def upload_to_youtube(video_file, title, description, privacy="public"):
         print("✗ google-api-python-client not installed. Run ./setup.sh")
         sys.exit(1)
 
-    # Always use full (non-readonly) scopes so upload is permitted
     creds   = _get_youtube_credentials(readonly=False)
     youtube = build("youtube", "v3", credentials=creds)
 
-    # Let the user pick which channel to upload to
-    # The YouTube API uploads to whichever channel the authenticated user
-    # selects — for Brand Accounts the API automatically targets that channel
-    # when the user is switched to it during OAuth. We show the list so the
-    # user can confirm they are authenticated against the right account.
     select_upload_channel(youtube)
 
     print(f"\n▶ Uploading: {title}")
 
-    body = {
-        "snippet": {
-            "title": title,
-            "description": description,
-            "categoryId": "22",
-        },
-        "status": {"privacyStatus": privacy},
+    snippet = {
+        "title":       title,
+        "description": description,
+        "categoryId":  "22",
     }
+    if tags:
+        snippet["tags"] = tags
 
-    media   = MediaFileUpload(video_file, chunksize=-1, resumable=True, mimetype="video/mp4")
-    request = youtube.videos().insert(
+    body  = {"snippet": snippet, "status": {"privacyStatus": privacy}}
+    media = MediaFileUpload(video_file, chunksize=-1, resumable=True, mimetype="video/mp4")
+    req   = youtube.videos().insert(
         part="snippet,status",
         body=body,
         media_body=media,
@@ -878,26 +999,46 @@ def upload_to_youtube(video_file, title, description, privacy="public"):
 
     response = None
     while response is None:
-        status, response = request.next_chunk()
+        status, response = req.next_chunk()
         if status:
             print(f"  Uploading... {int(status.progress() * 100)}%", end="\r")
 
-    video_id = response["id"]
+    video_id   = response["id"]
     video_url  = f"https://www.youtube.com/watch?v={video_id}"
     studio_url = f"https://studio.youtube.com/video/{video_id}/edit"
     print(f"\n✓ Uploaded: {video_url}")
+
+    # Upload thumbnail if we have one
+    if thumbnail_file and os.path.exists(thumbnail_file):
+        try:
+            ext      = thumbnail_file.rsplit(".", 1)[-1].lower()
+            mime     = "image/png" if ext == "png" else "image/jpeg"
+            thumb_media = MediaFileUpload(thumbnail_file, mimetype=mime)
+            youtube.thumbnails().set(
+                videoId=video_id,
+                media_body=thumb_media,
+            ).execute()
+            print(f"  ✓ Thumbnail uploaded")
+        except Exception as e:
+            print(f"  ⚠ Thumbnail upload failed (channel may not be verified): {e}")
+
     print(f"  Opening YouTube Studio to finish setup (audience, tags, playlist)...")
     import webbrowser
     webbrowser.open(studio_url)
     return video_id
 
-def ask_youtube_upload(args, trimmed_video, episode_title, description):
+def ask_youtube_upload(trimmed_video, episode_title, description,
+                       privacy, tags=None, thumbnail_file=None):
     """Ask the user whether to upload to YouTube, then do it if confirmed."""
     print()
     separator()
     print("  YOUTUBE UPLOAD\n")
-    print(f"  Title   : {episode_title}")
-    print(f"  Privacy : {args.privacy or CONFIG['youtube_privacy']}")
+    print(f"  Title     : {episode_title}")
+    print(f"  Privacy   : {privacy}")
+    if tags:
+        print(f"  Tags      : {len(tags)} tag(s)")
+    if thumbnail_file and os.path.exists(thumbnail_file):
+        print(f"  Thumbnail : {os.path.basename(thumbnail_file)}")
     print()
     print("  [Y] Yes — upload to YouTube now")
     print("  [N] No  — skip, I'll upload manually later")
@@ -906,7 +1047,7 @@ def ask_youtube_upload(args, trimmed_video, episode_title, description):
     if choice == "Y":
         upload_to_youtube(
             trimmed_video, episode_title, description,
-            args.privacy or CONFIG["youtube_privacy"]
+            privacy, tags=tags, thumbnail_file=thumbnail_file,
         )
 
 def run_mode_a(args, today):
@@ -914,20 +1055,29 @@ def run_mode_a(args, today):
     print("\n  Mode A — Auto Pipeline\n")
     output_dir = CONFIG["output_dir"]
 
-    # YouTube source selection (menu or flags)
     source_type, url = select_youtube_source(args)
     if source_type == "latest":
         url = get_latest_channel_video()
 
-    raw_video              = download_youtube(url, output_dir)
-    start_ts, end_ts       = ask_timestamps(args, video_file=raw_video)
-    episode_title, desc    = ask_episode_metadata(args, today)
-    trimmed_video          = trim_and_normalize(raw_video, start_ts, end_ts, output_dir, today)
-    audio_file             = export_audio(trimmed_video, output_dir, today)
+    # Fetch metadata from the source video before downloading
+    source_meta   = fetch_video_metadata(url)
 
-    ask_youtube_upload(args, trimmed_video, episode_title, desc)
+    raw_video     = download_youtube(url, output_dir)
+
+    # Download thumbnail alongside the video
+    thumbnail_file = None
+    if source_meta and source_meta.get("thumbnail"):
+        thumbnail_file = download_thumbnail(source_meta["thumbnail"], output_dir, today)
+
+    start_ts, end_ts                  = ask_timestamps(args, video_file=raw_video)
+    episode_title, desc, tags, privacy = ask_episode_metadata(args, today, source_meta)
+    trimmed_video                      = trim_and_normalize(raw_video, start_ts, end_ts, output_dir, today)
+    audio_file                         = export_audio(trimmed_video, output_dir, today)
+
+    ask_youtube_upload(trimmed_video, episode_title, desc, privacy,
+                       tags=tags, thumbnail_file=thumbnail_file)
     open_spotify_for_podcasters(audio_file, episode_title)
-    print_summary(trimmed_video, audio_file)
+    print_summary(trimmed_video, audio_file, thumbnail_file)
 
 # ─────────────────────────────────────────────
 #  MODE B — MANUAL (local file)
@@ -971,15 +1121,15 @@ def run_mode_b(args, today):
     print("\n  Mode B — Manual File\n")
     output_dir = CONFIG["output_dir"]
 
-    source_file            = locate_local_file(args.file)
-    start_ts, end_ts       = ask_timestamps(args, video_file=source_file)
-    episode_title, desc    = ask_episode_metadata(args, today)
-    trimmed_video          = trim_and_normalize(source_file, start_ts, end_ts, output_dir, today)
-    audio_file             = export_audio(trimmed_video, output_dir, today)
+    source_file                        = locate_local_file(args.file)
+    start_ts, end_ts                   = ask_timestamps(args, video_file=source_file)
+    # No source_meta in Mode B — user typed the file in manually
+    episode_title, desc, tags, privacy = ask_episode_metadata(args, today)
+    trimmed_video                      = trim_and_normalize(source_file, start_ts, end_ts, output_dir, today)
+    audio_file                         = export_audio(trimmed_video, output_dir, today)
 
-    # Optional YouTube upload — available in Mode B too
-    ask_youtube_upload(args, trimmed_video, episode_title, desc)
-
+    ask_youtube_upload(trimmed_video, episode_title, desc, privacy,
+                       tags=tags, thumbnail_file=None)
     open_spotify_for_podcasters(audio_file, episode_title)
     print_summary(trimmed_video, audio_file)
 
@@ -1035,7 +1185,7 @@ Examples:
                                          help="YouTube upload privacy (default: from CONFIG)")
 
     args  = parser.parse_args()
-    today = datetime.today().strftime("%Y-%m-%d")
+    today = datetime.today().strftime("%d-%m-%Y")
     mode  = args.mode or select_mode()
 
     if mode == "A":
