@@ -4,3 +4,5 @@ google-auth-oauthlib
 google-api-python-client
 requests
 tqdm
+flask>=3.0
+flask-cors>=4.0

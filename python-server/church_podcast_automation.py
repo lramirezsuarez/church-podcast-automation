@@ -47,12 +47,17 @@ if sys.version_info < (3, 10):
 #  CONFIGURATION  — edit these values
 # ─────────────────────────────────────────────
 
+# Resolve paths relative to this script file so they work
+# whether the script is run from the CLI or from inside the app bundle.
+_SCRIPT_DIR = Path(__file__).parent.resolve()
+_DATA_DIR   = _SCRIPT_DIR.parent  # one level up: the project / app data root
+
 CONFIG = {
     # Where processed files (trimmed video + mp3) are saved
-    "output_dir": "./podcast_output",
+    "output_dir": str(_DATA_DIR / "podcast_output"),
 
     # Drop manually downloaded .mp4 files here for Mode B
-    "inbox_dir": "./inbox",
+    "inbox_dir": str(_DATA_DIR / "inbox"),
 
     # Your YouTube channel ID — used in Mode A to auto-fetch latest video
     # Find it at: https://www.youtube.com/account_advanced
@@ -69,8 +74,8 @@ CONFIG = {
     "loudness_target": "-14",
 
     # YouTube OAuth2 credentials (see README for setup instructions)
-    "client_secrets_file": "client_secrets.json",
-    "token_file":          "youtube_token.json",
+    "client_secrets_file": str(_DATA_DIR / "client_secrets.json"),
+    "token_file":          str(_DATA_DIR / "youtube_token.json"),
 }
 
 # ─────────────────────────────────────────────
@@ -336,14 +341,18 @@ def select_mode():
         print("  [C] Clean     — Delete previous week\'s downloaded and processed")
         print("                  files to free up disk space and start fresh")
         print()
+        print("  [X] Exit")
         separator()
-        choice = menu_prompt("  Enter A, B, or C: ", ["A", "B", "C"])
+        choice = menu_prompt("  Enter A, B, C, or X: ", ["A", "B", "C", "X"])
 
         if choice == "C":
             run_clean_files()
             # After cleaning, loop back to show the menu again
             input("\n  Press Enter to return to the main menu...")
             continue
+
+        elif choice == "X":
+            sys.exit(0)
 
         return choice
 
