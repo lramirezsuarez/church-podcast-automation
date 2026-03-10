@@ -239,6 +239,7 @@ def gather_cleanable_files():
     Collect all files that the clean step can delete:
       - Every .mp4 in output_dir  (raw download + trimmed sermon)
       - Every .mp3 in output_dir  (exported audio)
+      - Every .jpg in output_dir (thumbnail downloaded from youtube)
       - Every .mp4 in inbox_dir   (manually downloaded originals)
     Returns a list of (label, filepath) tuples for existing files only.
     """
@@ -248,7 +249,7 @@ def gather_cleanable_files():
 
     for d, label in [(output_dir, "output"), (inbox_dir, "inbox")]:
         if os.path.isdir(d):
-            for ext in ("*.mp4", "*.mp3"):
+            for ext in ("*.mp4", "*.mp3", "*.jpg"):
                 for f in sorted(Path(d).glob(ext)):
                     size_mb = f.stat().st_size / (1024 * 1024)
                     files.append((label, str(f), size_mb))
