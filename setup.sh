@@ -142,6 +142,15 @@ else
     success "ffmpeg installed"
 fi
 
+header "Deno (YouTube JS challenge solver)"
+if command -v deno &>/dev/null; then
+    success "Deno already installed ($(deno --version | head -1))"
+else
+    info "Installing Deno..."
+    brew install deno
+    success "Deno installed"
+fi
+
 # ─────────────────────────────────────────────────────────────────
 #  PYTHON PACKAGES  (CLI deps + Flask server deps)
 # ─────────────────────────────────────────────────────────────────

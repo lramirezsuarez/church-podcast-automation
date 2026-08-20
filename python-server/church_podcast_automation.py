@@ -685,7 +685,7 @@ def fetch_video_metadata(url):
             sys.executable, "-m", "yt_dlp",
             "--dump-json", "--no-playlist",
             "--cookies-from-browser", browser,
-            url,
+            url, "--remote-components", "ejs:github"
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode == 0 and result.stdout.strip():
@@ -695,7 +695,7 @@ def fetch_video_metadata(url):
         cmd = [
             sys.executable, "-m", "yt_dlp",
             "--dump-json", "--no-playlist",
-            url,
+            url, "--remote-components", "ejs:github"
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
 
@@ -749,11 +749,12 @@ def download_youtube(url, output_dir):
     out_template = os.path.join(output_dir, "%(title)s [%(id)s].%(ext)s")
 
     base_cmd = [
-        sys.executable, "-m", "yt_dlp",
-        "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-        "--merge-output-format", "mp4",
-        "-o", out_template,
-        "--print", "after_move:filepath",
+    sys.executable, "-m", "yt_dlp",
+    "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+    "--merge-output-format", "mp4",
+    "-o", out_template,
+    "--print", "after_move:filepath",
+    "--remote-components", "ejs:github",
     ]
 
     print(f"\n▶ Downloading: {url}")
